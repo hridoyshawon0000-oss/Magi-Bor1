@@ -156,6 +156,8 @@ def setup_database():
                      ("welcome_file_id", ""))
         conn.execute("INSERT OR IGNORE INTO bot_settings (key,value) VALUES (?,?)",
                      ("delete_after", str(DEFAULT_DELETE_AFTER)))
+        conn.execute("INSERT OR IGNORE INTO bot_settings (key,value) VALUES (?,?)",
+                     ("broadcast_media_mode", "active")) # Default broadcast media status
         for slot, label, url in DEFAULT_BUTTONS:
             conn.execute("INSERT OR IGNORE INTO welcome_buttons (slot,label,url) VALUES (?,?,?)",
                          (slot, label, url))
@@ -505,6 +507,12 @@ async def confirmed_video_broadcaster_worker(application: Application):
     await asyncio.sleep(60)
     while True:
         try:
+            # Check if broadcast media mode is active
+            mode = db_get_setting("broadcast_media_mode", "active")
+            if mode != "active":
+                await asyncio.sleep(60)
+                continue
+
             with closing(db_connect()) as conn:
                 videos = conn.execute("SELECT id,file_id,caption FROM confirmed_videos ORDER BY id LIMIT 15").fetchall()
             users = get_registered_users()
@@ -534,32 +542,28 @@ async def confirmed_video_broadcaster_worker(application: Application):
 
 
 # =========================================================
-# TELETHON SCANNER FOR HISTORY
+# TELETHON SCANNER FOR HISTORY (Non-Blocking Wrapper)
 # =========================================================
-async def scan_old_media_and_podcasts_telethon():
-    if SCAN_LOCK.locked():
-        logger.info("A scan is already running; skipping duplicate request.")
-        return 0, 0
-
-    async with SCAN_LOCK:
-        welcome_count = 0
-        podcast_count = 0
-        client = TelegramClient(StringSession(STRING_SESSION), API_ID, API_HASH)
-        await client.connect()
-
-        if not await client.is_user_authorized():
+def _sync_scan_old_media_and_podcasts():
+    """Synchronous Telethon scanning logic to run in a separate thread."""
+    welcome_count = 0
+    podcast_count = 0
+    client = TelegramClient(StringSession(STRING_SESSION), API_ID, API_HASH)
+    
+    # Run Telethon synchronously inside the thread
+    with client:
+        if not client.is_user_authorized():
             logger.error("Telethon session is invalid or expired.")
             return 0, 0
 
         try:
             logger.info("Scanning old posts in source channel %s", PODCAST_SOURCE_CHANNEL_ID)
-            async for message in client.iter_messages(PODCAST_SOURCE_CHANNEL_ID):
+            for message in client.iter_messages(PODCAST_SOURCE_CHANNEL_ID):
                 if message.photo:
                     source_ref = f"source:{PODCAST_SOURCE_CHANNEL_ID}:{message.id}"
                     if save_welcome_media("photo", source_ref, message.id):
                         welcome_count += 1
                 
-                # Check if it's a video or a document containing a video
                 is_video = False
                 if message.video:
                     is_video = True
@@ -580,10 +584,19 @@ async def scan_old_media_and_podcasts_telethon():
                             podcast_count += 1
         except Exception as e:
             logger.error(f"Error during Telethon scan: {e}")
-        finally:
-            await client.disconnect()
 
-        logger.info("Scan finished: %s welcome items; %s videos added", welcome_count, podcast_count)
+    logger.info("Scan finished: %s welcome items; %s videos added", welcome_count, podcast_count)
+    return welcome_count, podcast_count
+
+async def scan_old_media_and_podcasts_telethon():
+    """Asynchronous non-blocking wrapper for history scanning."""
+    if SCAN_LOCK.locked():
+        logger.info("A scan is already running; skipping duplicate request.")
+        return 0, 0
+
+    async with SCAN_LOCK:
+        # Run blocking telethon code in a separate thread so bot stays active for other users
+        welcome_count, podcast_count = await asyncio.to_thread(_sync_scan_old_media_and_podcasts)
         return welcome_count, podcast_count
 
 
@@ -651,6 +664,12 @@ async def podcast_poster_worker(application: Application):
     await asyncio.sleep(20)
     while True:
         try:
+            # Check if broadcast media mode is active
+            mode = db_get_setting("broadcast_media_mode", "active")
+            if mode != "active":
+                await asyncio.sleep(60)
+                continue
+
             with closing(db_connect()) as conn:
                 videos = conn.execute(
                     "SELECT chat_id,message_id FROM podcast_videos ORDER BY RANDOM() LIMIT ?",
@@ -688,6 +707,7 @@ def admin_main_keyboard():
         [InlineKeyboardButton("➕ Add Admin", callback_data="adm:add_admin")],
         [InlineKeyboardButton("👥 Total Members", callback_data="adm:members")],
         [InlineKeyboardButton("🔘 Welcome Buttons", callback_data="adm:welcome_buttons")],
+        [InlineKeyboardButton("📢 Broadcast Only Media Mode", callback_data="adm:broadcast_media_menu")],
         [InlineKeyboardButton("📊 Media Pool Stats", callback_data="adm:mediastats")],
         [InlineKeyboardButton("🚫 Ban Users", callback_data="adm:ban_menu")],
         [InlineKeyboardButton("⏱ Broadcast Delete Time", callback_data="adm:delete_time")],
@@ -757,6 +777,42 @@ async def admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             wm = conn.execute("SELECT COUNT(*) FROM welcome_media").fetchone()[0]
             vids = conn.execute("SELECT COUNT(*) FROM podcast_videos").fetchone()[0]
         await edit_admin_page(query, f"📊 <b>MEDIA STATS</b>\n\nWelcome photos/videos: <b>{wm}</b>\nSaved source videos: <b>{vids}</b>")
+    elif data == "adm:broadcast_media_menu":
+        current_status = db_get_setting("broadcast_media_mode", "active")
+        status_text = "🟢 Active" if current_status == "active" else "🔴 Off"
+        await edit_admin_page(
+            query,
+            f"📢 <b>BROADCAST ONLY MEDIA MODE</b>\n\nCurrent Status: <b>{status_text}</b>\n\nChoose an option below:",
+            InlineKeyboardMarkup([
+                [InlineKeyboardButton("🟢 Active Media", callback_data="adm:media_on")],
+                [InlineKeyboardButton("🔴 Turn off Media", callback_data="adm:media_off")],
+                [InlineKeyboardButton("⬅️ Back", callback_data="adm:home")]
+            ])
+        )
+    elif data == "adm:media_on":
+        db_set_setting("broadcast_media_mode", "active")
+        await query.answer("🟢 Broadcast media activated successfully!", show_alert=True)
+        await edit_admin_page(
+            query,
+            "📢 <b>BROADCAST ONLY MEDIA MODE</b>\n\nCurrent Status: <b>🟢 Active</b>\n\nChoose an option below:",
+            InlineKeyboardMarkup([
+                [InlineKeyboardButton("🟢 Active Media", callback_data="adm:media_on")],
+                [InlineKeyboardButton("🔴 Turn off Media", callback_data="adm:media_off")],
+                [InlineKeyboardButton("⬅️ Back", callback_data="adm:home")]
+            ])
+        )
+    elif data == "adm:media_off":
+        db_set_setting("broadcast_media_mode", "off")
+        await query.answer("🔴 Broadcast media turned off successfully!", show_alert=True)
+        await edit_admin_page(
+            query,
+            "📢 <b>BROADCAST ONLY MEDIA MODE</b>\n\nCurrent Status: <b>🔴 Off</b>\n\nChoose an option below:",
+            InlineKeyboardMarkup([
+                [InlineKeyboardButton("🟢 Active Media", callback_data="adm:media_on")],
+                [InlineKeyboardButton("🔴 Turn off Media", callback_data="adm:media_off")],
+                [InlineKeyboardButton("⬅️ Back", callback_data="adm:home")]
+            ])
+        )
     elif data == "adm:welcome_buttons":
         rows = [[InlineKeyboardButton(f"✏️ Edit Button {slot}: {label[:30]}",
                                      callback_data=f"adm:edit_button:{slot}")]
