@@ -44,7 +44,7 @@ PODCAST_DELETE_SECONDS = 30 * 60
 
 ADMIN_PANEL_IMAGE = "https://carder.top/imagens/1791557140321-440701283.jpg"
 
-DEFAULT_WELCOME = """👋🏻 {mention} 👋🏻 𝐖𝐞𝐥𝐜𝐨𝐦𝐞 𝐭𝐨 𝐭𝐡𝐞 𝐌𝐞𝐝𝐢𝐚 𝐁𝐨𝐭𝐬 🫦
+DEFAULT_WELCOME = """👋🏻 {mention} 👋🏻 𝐖𝐞𝐥𝐜𝐨𝐦𝐞 𝐭𝐨 𝐭𝐡𝐞 𝐌𝐞𝐝𝐢𝐚 𝐁𝐨𝐭𝐬 
 
 Greetings, Agent! 🚀
 Your VIP Access Pass has been generated.
