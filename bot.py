@@ -21,7 +21,7 @@ from telethon.sessions import StringSession
 # =========================================================
 # CONFIGURATION — Your Credentials
 # =========================================================
-BOT_TOKEN = "8990092257:AAHio2Gi7JcrrWWweoKXofYRV4jd3nuLmJc"
+BOT_TOKEN = "8994987290:AAHlGGRkhHknmgQER6dKd7IzGVz9hX-ToxI"
 API_ID = 33511945
 API_HASH = "d044392a17690c14ee5b4a23651a0700"
 STRING_SESSION = "1BVtsOJABuywVFXSpyLpIFWZ0GalSYTlj7nW4GKLe-Yn6bjqPueyAvwsf_EOmM-C5r3vPScH7vW2ruVEzR3GAuSrF-OLMbdb-UdvTExuBq1r-DqPx4CauUCpaSQ_MP2FWcM_sJLuLxXD0SWSAx_EOEU_JPizoI2tizRArmUoShME62IT0BW9MSGdax_hpdrq2gFs3pRXw8I0P8pDuQzwUFFVN4euaLWYryPtA_afzcivf3r0D6gjlpQ5fEf1PSbbWag_er-CtaKs6gpw6zGaSDFWXJEt0wfxI0-jJNZ1zDzFhYaLXbUStAWcdLJpze7gBXvq8IvYUc9wa5XUIEC9H7IyItfeqV7w="
