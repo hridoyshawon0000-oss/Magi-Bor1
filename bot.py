@@ -14,10 +14,17 @@ from telegram.ext import (
     ContextTypes, filters,
 )
 
+# Telethon imports for history scanning
+from telethon import TelegramClient
+from telethon.sessions import StringSession
+
 # =========================================================
 # CONFIGURATION — Your Credentials
 # =========================================================
-BOT_TOKEN = "8994987290:AAHlGGRkhHknmgQER6dKd7IzGVz9hX-ToxI"
+BOT_TOKEN = "8990092257:AAHio2Gi7JcrrWWweoKXofYRV4jd3nuLmJc"
+API_ID = 33511945
+API_HASH = "d044392a17690c14ee5b4a23651a0700"
+STRING_SESSION = "1BVtsOJABuywVFXSpyLpIFWZ0GalSYTlj7nW4GKLe-Yn6bjqPueyAvwsf_EOmM-C5r3vPScH7vW2ruVEzR3GAuSrF-OLMbdb-UdvTExuBq1r-DqPx4CauUCpaSQ_MP2FWcM_sJLuLxXD0SWSAx_EOEU_JPizoI2tizRArmUoShME62IT0BW9MSGdax_hpdrq2gFs3pRXw8I0P8pDuQzwUFFVN4euaLWYryPtA_afzcivf3r0D6gjlpQ5fEf1PSbbWag_er-CtaKs6gpw6zGaSDFWXJEt0wfxI0-jJNZ1zDzFhYaLXbUStAWcdLJpze7gBXvq8IvYUc9wa5XUIEC9H7IyItfeqV7w="
 
 ADMIN_ID = 8788804249
 BROADCAST_CHANNEL_ID = -1003785686277
@@ -74,6 +81,7 @@ logging.basicConfig(
     level=logging.INFO,
 )
 logger = logging.getLogger(__name__)
+SCAN_LOCK = asyncio.Lock()
 
 
 # =========================================================
@@ -83,7 +91,6 @@ def db_connect():
     conn = sqlite3.connect(DATABASE, timeout=30)
     conn.execute("PRAGMA busy_timeout = 30000")
     return conn
-
 
 def setup_database():
     with closing(db_connect()) as conn:
@@ -160,23 +167,19 @@ def db_get_setting(key, default=""):
         row = conn.execute("SELECT value FROM bot_settings WHERE key=?", (key,)).fetchone()
     return row[0] if row else default
 
-
 def db_set_setting(key, value):
     with closing(db_connect()) as conn:
         conn.execute("""INSERT INTO bot_settings (key,value) VALUES (?,?)
             ON CONFLICT(key) DO UPDATE SET value=excluded.value""", (key, str(value)))
         conn.commit()
 
-
 def is_admin(user_id):
     with closing(db_connect()) as conn:
         return conn.execute("SELECT 1 FROM bot_admins WHERE user_id=?", (user_id,)).fetchone() is not None
 
-
 def get_admin_ids():
     with closing(db_connect()) as conn:
         return [r[0] for r in conn.execute("SELECT user_id FROM bot_admins ORDER BY user_id").fetchall()]
-
 
 def register_user(user_id):
     with closing(db_connect()) as conn:
@@ -185,7 +188,6 @@ def register_user(user_id):
             ON CONFLICT(user_id) DO UPDATE SET status='active'""", (user_id, time.time()))
         conn.commit()
 
-
 def get_registered_users(include_banned=False):
     sql = "SELECT user_id FROM broadcast_users WHERE status='active'"
     if not include_banned:
@@ -193,12 +195,10 @@ def get_registered_users(include_banned=False):
     with closing(db_connect()) as conn:
         return conn.execute(sql).fetchall()
 
-
 def mark_user_blocked(user_id):
     with closing(db_connect()) as conn:
         conn.execute("UPDATE broadcast_users SET status='blocked' WHERE user_id=?", (user_id,))
         conn.commit()
-
 
 def set_user_banned(user_id, banned=True):
     with closing(db_connect()) as conn:
@@ -208,7 +208,6 @@ def set_user_banned(user_id, banned=True):
             (user_id, int(banned), time.time()))
         conn.commit()
 
-
 def get_member_stats():
     with closing(db_connect()) as conn:
         total = conn.execute("SELECT COUNT(*) FROM broadcast_users").fetchone()[0]
@@ -217,24 +216,20 @@ def get_member_stats():
         banned = conn.execute("SELECT COUNT(*) FROM broadcast_users WHERE banned=1").fetchone()[0]
     return total, active, blocked, banned
 
-
 def get_welcome_buttons():
     with closing(db_connect()) as conn:
         return conn.execute("SELECT slot,label,url FROM welcome_buttons ORDER BY slot").fetchall()
-
 
 def update_welcome_button(slot, label, url):
     with closing(db_connect()) as conn:
         conn.execute("UPDATE welcome_buttons SET label=?,url=? WHERE slot=?", (label, url, slot))
         conn.commit()
 
-
 def get_delete_after():
     try:
         return max(60, int(db_get_setting("delete_after", str(DEFAULT_DELETE_AFTER))))
     except (ValueError, TypeError):
         return DEFAULT_DELETE_AFTER
-
 
 def schedule_message_deletion(chat_id, message_id, delay_seconds=None):
     if delay_seconds is None:
@@ -243,7 +238,6 @@ def schedule_message_deletion(chat_id, message_id, delay_seconds=None):
         conn.execute("""INSERT OR REPLACE INTO scheduled_deletions (chat_id,message_id,delete_at)
             VALUES (?,?,?)""", (chat_id, message_id, time.time() + delay_seconds))
         conn.commit()
-
 
 def remove_scheduled_deletion(chat_id, message_id):
     with closing(db_connect()) as conn:
@@ -265,14 +259,12 @@ def save_welcome_media(media_type, file_id, source_message_id=None):
         conn.commit()
         return cur.rowcount > 0
 
-
 def get_channel_media(message):
     if message.video:
         return "video", message.video.file_id
     if message.photo:
         return "photo", message.photo[-1].file_id
     return None, None
-
 
 def choose_welcome_media(user_id):
     with closing(db_connect()) as conn:
@@ -290,19 +282,16 @@ def choose_welcome_media(user_id):
             unseen = all_media
         return random.choice(unseen)
 
-
 def mark_welcome_media_seen(user_id, media_id):
     with closing(db_connect()) as conn:
         conn.execute("INSERT OR IGNORE INTO user_media_history (user_id,media_id,sent_at) VALUES (?,?,?)",
                      (user_id, media_id, time.time()))
         conn.commit()
 
-
 def get_previous_welcome(user_id):
     with closing(db_connect()) as conn:
         return conn.execute("SELECT chat_id,message_id FROM welcome_messages WHERE user_id=?",
                             (user_id,)).fetchone()
-
 
 def save_previous_welcome(user_id, chat_id, message_id):
     with closing(db_connect()) as conn:
@@ -310,7 +299,6 @@ def save_previous_welcome(user_id, chat_id, message_id):
             ON CONFLICT(user_id) DO UPDATE SET chat_id=excluded.chat_id,message_id=excluded.message_id""",
             (user_id, chat_id, message_id))
         conn.commit()
-
 
 async def delete_previous_welcome(bot, user_id):
     previous = get_previous_welcome(user_id)
@@ -326,13 +314,11 @@ async def delete_previous_welcome(bot, user_id):
         conn.execute("DELETE FROM welcome_messages WHERE user_id=?", (user_id,))
         conn.commit()
 
-
 def make_welcome_keyboard():
     return InlineKeyboardMarkup([
         [InlineKeyboardButton(label, url=url)]
         for _slot, label, url in get_welcome_buttons()
     ])
-
 
 def format_welcome_text(raw_text, user):
     safe_name = escape(user.first_name or "User")
@@ -340,7 +326,6 @@ def format_welcome_text(raw_text, user):
     marker = "___WELCOME_USER_MENTION___"
     safe_text = escape(raw_text or "").replace("{mention}", marker)
     return safe_text.replace(marker, mention)
-
 
 async def send_welcome(bot, chat_id, user):
     raw = db_get_setting("welcome_text", DEFAULT_WELCOME)
@@ -393,7 +378,6 @@ async def delete_start_later(context, chat_id, message_id):
     except TelegramError:
         pass
 
-
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user, chat, message = update.effective_user, update.effective_chat, update.effective_message
     if not user or not chat or not message:
@@ -408,7 +392,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await delete_previous_welcome(context.bot, user.id)
     context.application.create_task(delete_start_later(context, chat.id, message.message_id))
     await send_welcome(context.bot, chat.id, user)
-
 
 async def copy_to_user(application, user_id, source_chat_id, message_id,
                        reply_markup=None, deletion_seconds=None):
@@ -470,7 +453,6 @@ async def incoming_media_handler(update: Update, context: ContextTypes.DEFAULT_T
     except Exception:
         logger.exception("Could not forward media to confirmation group")
 
-
 async def media_approval_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query, user = update.callback_query, update.effective_user
     if not query or not (query.data or "").startswith("med_"):
@@ -519,7 +501,6 @@ async def media_approval_callback(update: Update, context: ContextTypes.DEFAULT_
             conn.execute("DELETE FROM media_approvals WHERE conf_message_id=?", (conf_msg_id,))
             conn.commit()
 
-
 async def confirmed_video_broadcaster_worker(application: Application):
     await asyncio.sleep(60)
     while True:
@@ -553,8 +534,83 @@ async def confirmed_video_broadcaster_worker(application: Application):
 
 
 # =========================================================
-# CHANNEL POSTS SCANNER (Real-time only)
+# TELETHON SCANNER FOR HISTORY
 # =========================================================
+async def scan_old_media_and_podcasts_telethon():
+    if SCAN_LOCK.locked():
+        logger.info("A scan is already running; skipping duplicate request.")
+        return 0, 0
+
+    async with SCAN_LOCK:
+        welcome_count = 0
+        podcast_count = 0
+        client = TelegramClient(StringSession(STRING_SESSION), API_ID, API_HASH)
+        await client.connect()
+
+        if not await client.is_user_authorized():
+            logger.error("Telethon session is invalid or expired.")
+            return 0, 0
+
+        try:
+            logger.info("Scanning old posts in source channel %s", PODCAST_SOURCE_CHANNEL_ID)
+            async for message in client.iter_messages(PODCAST_SOURCE_CHANNEL_ID):
+                if message.photo:
+                    source_ref = f"source:{PODCAST_SOURCE_CHANNEL_ID}:{message.id}"
+                    if save_welcome_media("photo", source_ref, message.id):
+                        welcome_count += 1
+                
+                # Check if it's a video or a document containing a video
+                is_video = False
+                if message.video:
+                    is_video = True
+                elif message.document and message.file and message.file.mime_type and message.file.mime_type.startswith('video/'):
+                    is_video = True
+
+                if is_video:
+                    source_ref = f"source:{PODCAST_SOURCE_CHANNEL_ID}:{message.id}"
+                    if save_welcome_media("video", source_ref, message.id):
+                        welcome_count += 1
+
+                    with closing(db_connect()) as conn:
+                        cur = conn.execute("""INSERT OR IGNORE INTO podcast_videos
+                            (chat_id,message_id,added_at) VALUES (?,?,?)""",
+                            (PODCAST_SOURCE_CHANNEL_ID, message.id, time.time()))
+                        conn.commit()
+                        if cur.rowcount > 0:
+                            podcast_count += 1
+        except Exception as e:
+            logger.error(f"Error during Telethon scan: {e}")
+        finally:
+            await client.disconnect()
+
+        logger.info("Scan finished: %s welcome items; %s videos added", welcome_count, podcast_count)
+        return welcome_count, podcast_count
+
+
+async def importpodcast_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user, message = update.effective_user, update.effective_message
+    if not user or not message or not is_admin(user.id):
+        if message:
+            await message.reply_text("⛔ Admin access only.")
+        return
+    status = await message.reply_text("⏳ Scanning old channel videos and welcome media...")
+    try:
+        welcome_added, videos_added = await scan_old_media_and_podcasts_telethon()
+        with closing(db_connect()) as conn:
+            total_welcome = conn.execute("SELECT COUNT(*) FROM welcome_media").fetchone()[0]
+            total_videos = conn.execute("SELECT COUNT(*) FROM podcast_videos").fetchone()[0]
+        await status.edit_text(
+            "✅ Scan completed.\n\n"
+            f"New welcome media: {welcome_added}\n"
+            f"New videos: {videos_added}\n"
+            f"Total welcome media: {total_welcome}\n"
+            f"Total saved videos: {total_videos}"
+        )
+    except Exception as error:
+        logger.exception("Import scan failed")
+        await status.edit_text(f"❌ Scan failed: {str(error)[:700]}")
+
+
 async def channel_post_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     message = update.channel_post
     if not message:
@@ -590,16 +646,6 @@ async def channel_post_handler(update: Update, context: ContextTypes.DEFAULT_TYP
         except Exception:
             pass
         await asyncio.sleep(0.03)
-
-
-async def importpodcast_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user, message = update.effective_user, update.effective_message
-    if not user or not message or not is_admin(user.id):
-        if message:
-            await message.reply_text("⛔ Admin access only.")
-        return
-    await message.reply_text("ℹ️ String Session রিমুভ করার কারণে চ্যানেলের পুরোনো হিস্ট্রি স্ক্যান করার ফিচারটি বন্ধ করে দেওয়া হয়েছে।\n\nএখন থেকে চ্যানেলে শুধুমাত্র *নতুন* কোনো ভিডিও বা মিডিয়া দেওয়া হলে বট সেটি অটোমেটিক সেভ করে নেবে।")
-
 
 async def podcast_poster_worker(application: Application):
     await asyncio.sleep(20)
@@ -648,10 +694,8 @@ def admin_main_keyboard():
         [InlineKeyboardButton("🛡️ Admin List", callback_data="adm:admin_list")],
     ])
 
-
 def back_keyboard():
     return InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Back to Admin Panel", callback_data="adm:home")]])
-
 
 async def edit_admin_page(query, text, keyboard=None):
     keyboard = keyboard or back_keyboard()
@@ -664,7 +708,6 @@ async def edit_admin_page(query, text, keyboard=None):
     except BadRequest as error:
         if "message is not modified" not in str(error).lower():
             logger.debug("Admin page edit failed: %s", error)
-
 
 async def show_admin_panel(update_or_query, context):
     keyboard = admin_main_keyboard()
@@ -683,7 +726,6 @@ async def show_admin_panel(update_or_query, context):
     except TelegramError:
         await message.reply_text("🛠️ BOT ADMIN PANEL\n\nChoose a section below:", reply_markup=keyboard)
 
-
 async def admin_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     if not user or not is_admin(user.id):
@@ -691,7 +733,6 @@ async def admin_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.effective_message.reply_text("⛔ Admin access only.")
         return
     await show_admin_panel(update, context)
-
 
 async def admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query, user = update.callback_query, update.effective_user
@@ -763,7 +804,6 @@ async def admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         listing = "\n".join(f"• <code>{admin_id}</code>" for admin_id in ids)
         await edit_admin_page(query, "🛡️ <b>ADMIN LIST</b>\n\n" + (listing or "No admins found."))
 
-
 async def cancel_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user and is_admin(update.effective_user.id):
         context.user_data.pop("admin_action", None)
@@ -773,11 +813,9 @@ async def cancel_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif update.effective_message:
         await update.effective_message.reply_text("Nothing to cancel.")
 
-
 def valid_button_url(value):
     parsed = urlparse(value.strip())
     return parsed.scheme in ("https", "http", "tg") and bool(parsed.netloc or parsed.scheme == "tg")
-
 
 async def admin_input_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user, message = update.effective_user, update.effective_message
@@ -822,7 +860,6 @@ async def admin_input_handler(update: Update, context: ContextTypes.DEFAULT_TYPE
         context.user_data.pop("pending_button_label", None)
         await message.reply_text(f"✅ Welcome button {slot} updated.")
 
-
 async def mediastats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user, message = update.effective_user, update.effective_message
     if not user or not message or not is_admin(user.id):
@@ -831,7 +868,6 @@ async def mediastats_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
         welcome = conn.execute("SELECT COUNT(*) FROM welcome_media").fetchone()[0]
         videos = conn.execute("SELECT COUNT(*) FROM podcast_videos").fetchone()[0]
     await message.reply_text(f"📊 Welcome media: {welcome}\n🎬 Source videos: {videos}")
-
 
 async def broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
     message, user = update.effective_message, update.effective_user
@@ -873,7 +909,6 @@ async def automatic_deletion(application: Application):
         finally:
             remove_scheduled_deletion(chat_id, message_id)
 
-
 async def deletion_worker(application: Application):
     while True:
         try:
@@ -883,7 +918,6 @@ async def deletion_worker(application: Application):
         except Exception:
             logger.exception("Deletion worker error")
         await asyncio.sleep(DELETE_CHECK_INTERVAL)
-
 
 async def post_init(application: Application):
     setup_database()
